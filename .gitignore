@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+ 
+# Virtual environment
+grn_hgnn_env/
+venv/
+env/
+ 
+# Jupyter
+.ipynb_checkpoints/
+ 
+# MacOS
+.DS_Store
+ 
+# File temporanei
+lista_src5.txt
+ 
+# Log
+*.log

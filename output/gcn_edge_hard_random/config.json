@@ -1,0 +1,18 @@
+{
+  "exp_name": "gcn_edge_hard_random",
+  "analysis": "gcn_edge_hard_random",
+  "model": "GCN_Edge_Hard_Random",
+  "structure": "edge_prediction",
+  "model_type": "gcn",
+  "masking": "hard_random",
+  "k": 10,
+  "epochs": 100,
+  "lr": 0.001,
+  "hidden_dim": 128,
+  "dropout": 0.5,
+  "weight_decay": 0.0005,
+  "patience": 10,
+  "test_ratio": 0.2,
+  "seed": 42,
+  "neg_split": "opzione_B"
+}
