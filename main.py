@@ -209,6 +209,56 @@ def parse_args():
     parser.add_argument("--seed",         type=int,   default=42)
     parser.add_argument("--k",            type=int,   default=10,
                         help="K nearest neighbors (solo per statistical)")
+    parser.add_argument("--use_topo_features", action="store_true",
+                        help="Aggiunge grado ed entropia come feature "
+                             "aggiuntive in X (805 → 807 feature). "
+                             "Di default disattivato.")
+
+    # ── Nuovi parametri suggeriti dal tutor ───────────────────────
+    parser.add_argument("--weighted_tf", action="store_true",
+                        help="Pesa i TF inversamente al loro grado in Θ. "
+                             "Riduce l'influenza di TF dominanti (es. G120). "
+                             "Solo per HGNN.")
+    parser.add_argument("--use_arc_features", action="store_true",
+                        help="Aggiunge grado TF e grado gene come feature "
+                             "extra al decoder (arc-level features). "
+                             "Il decoder vede: [emb_TF|emb_gene|deg_TF|deg_gene].")
+    parser.add_argument("--curriculum", action="store_true",
+                        help="Usa curriculum learning per i negativi: "
+                             "Fase1 random → Fase2 misto → Fase3 hard. "
+                             "Richiede masking hard_stratified o hard_random.")
+    parser.add_argument("--curriculum_phase1_ratio", type=float, default=0.33,
+                        help="Frazione di epoche per la Fase 1 (negativi random). "
+                             "Default 0.33 → 33/33/33. "
+                             "Es. 0.60 → Fase1=60%% Fase2=20%% Fase3=20%%.")
+    parser.add_argument("--curriculum_patience", type=str, default=None,
+                        help="Patience variabile per fase del curriculum. "
+                             "Formato: 'p1,p2,p3' es. '10,25,20'. "
+                             "Default None → usa --patience per tutte le fasi.")
+    # ── Curriculum sigmoid (opzione C) ────────────────────────────
+    parser.add_argument("--curriculum_sigmoid", action="store_true",
+                        help="Curriculum con peso sigmoid continuo invece di fasi discrete. "
+                             "Default False → comportamento invariato.")
+    parser.add_argument("--curriculum_sigmoid_midpoint", type=float, default=0.75,
+                        help="Frazione di epoche dove p_hard=50%%. Default 0.75.")
+    parser.add_argument("--curriculum_sigmoid_temp", type=float, default=10.0,
+                        help="Temperatura sigmoid. Default 10.0.")
+    # ── Online Hard Negative Mining (opzione E) ───────────────────
+    parser.add_argument("--online_mining", action="store_true",
+                        help="Online Hard Negative Mining: ogni --online_mining_freq epoche "
+                             "ricalcola i negativi hard usando le predizioni del modello corrente. "
+                             "Default False → comportamento invariato.")
+    parser.add_argument("--online_mining_freq", type=int, default=10,
+                        help="Ogni quante epoche aggiornare i negativi hard. Default 10.")
+    parser.add_argument("--online_mining_k", type=int, default=0,
+                        help="Quanti hard negatives selezionare. "
+                             "Default 0 → uguale al numero di positivi.")
+    parser.add_argument("--online_mining_sample", type=int, default=50000,
+                        help="Quanti negativi campionare per lo scoring. Default 50000.")
+    parser.add_argument("--online_mining_warmup", type=int, default=0,
+                        help="Epoche di training su random puro prima del primo mining. "
+                             "Default 0 → mining da subito (comportamento precedente). "
+                             "Suggerito: 50-70 per stabilizzare gli embeddings.")
 
     return parser.parse_args()
 
@@ -239,35 +289,74 @@ def run_experiment(analysis_key, exp_name, args, data_step1):
     print(f"  Esperimento: {exp_name}")
     print("█" * 55)
 
+    # Costruisce model_name dinamico in base ai flag attivi
+    model_name = cfg['model_name']
+    if args.use_topo_features:
+        model_name += "_Topo"
+    if args.weighted_tf:
+        model_name += "_WeightedTF"
+    if args.use_arc_features:
+        model_name += "_ArcFeat"
+    if args.curriculum:
+        pct = int(args.curriculum_phase1_ratio * 100)
+        suffix = f"_Curriculum{pct}"
+        if args.curriculum_patience:
+            suffix += "_VarP"
+        model_name += suffix
+    if args.curriculum_sigmoid:
+        mid = int(args.curriculum_sigmoid_midpoint * 100)
+        model_name += f"_Sigmoid{mid}"
+    if args.online_mining:
+        suffix = f"_OnlineMining{args.online_mining_freq}"
+        if args.online_mining_warmup > 0:
+            suffix += f"W{args.online_mining_warmup}"
+        model_name += suffix
+
     # Salva config
     config = {
-        "exp_name":     exp_name,
-        "analysis":     analysis_key,
-        "model":        cfg['model_name'],
-        "structure":    cfg['structure'],
-        "model_type":   cfg['model_type'],
-        "masking":      cfg['masking'],
-        "k":            k,
-        "epochs":       args.epochs,
-        "lr":           args.lr,
-        "hidden_dim":   args.hidden_dim,
-        "dropout":      args.dropout,
-        "weight_decay": args.weight_decay,
-        "patience":     args.patience,
-        "test_ratio":   args.test_ratio,
-        "seed":         args.seed,
-        "neg_split":    "opzione_B",   # documenta la correzione
+        "exp_name":          exp_name,
+        "analysis":          analysis_key,
+        "model":             model_name,
+        "structure":         cfg['structure'],
+        "model_type":        cfg['model_type'],
+        "masking":           cfg['masking'],
+        "k":                 k,
+        "epochs":            args.epochs,
+        "lr":                args.lr,
+        "hidden_dim":        args.hidden_dim,
+        "dropout":           args.dropout,
+        "weight_decay":      args.weight_decay,
+        "patience":          args.patience,
+        "test_ratio":        args.test_ratio,
+        "seed":              args.seed,
+        "neg_split":         "opzione_B",
+        "use_topo_features": args.use_topo_features,
+        "input_features":    807 if args.use_topo_features else 805,
+        "weighted_tf":       args.weighted_tf,
+        "use_arc_features":  args.use_arc_features,
+        "curriculum":              args.curriculum,
+        "curriculum_phase1_ratio": args.curriculum_phase1_ratio,
+        "curriculum_patience":              args.curriculum_patience,
+        "curriculum_sigmoid":               args.curriculum_sigmoid,
+        "curriculum_sigmoid_midpoint":      args.curriculum_sigmoid_midpoint,
+        "curriculum_sigmoid_temp":          args.curriculum_sigmoid_temp,
+        "online_mining":                    args.online_mining,
+        "online_mining_freq":               args.online_mining_freq,
+        "online_mining_k":                  args.online_mining_k,
+        "online_mining_sample":             args.online_mining_sample,
+        "online_mining_warmup":             args.online_mining_warmup,
     }
     save_json(config, os.path.join(exp_dir, "config.json"))
 
     # ── STEP 2 ────────────────────────────────────────────────────
     run_kwargs = dict(
-        structure  = cfg['structure'],
-        model_type = cfg['model_type'],
-        masking    = cfg['masking'] or 'random',
-        k          = k,
-        test_ratio = args.test_ratio,
-        seed       = args.seed,
+        structure         = cfg['structure'],
+        model_type        = cfg['model_type'],
+        masking           = cfg['masking'] or 'random',
+        k                 = k,
+        test_ratio        = args.test_ratio,
+        seed              = args.seed,
+        use_topo_features = args.use_topo_features,
     )
     data_step2 = s2.run(data_step1, **run_kwargs)
 
@@ -277,18 +366,33 @@ def run_experiment(analysis_key, exp_name, args, data_step1):
 
     # ── STEP 3 ────────────────────────────────────────────────────
     data_step3 = s3.run(data_step2,
-                        model_type   = cfg['model_type'],
-                        epochs       = args.epochs,
-                        lr           = args.lr,
-                        hidden_dim   = args.hidden_dim,
-                        dropout      = args.dropout,
-                        weight_decay = args.weight_decay,
-                        patience     = args.patience)
+                        model_type        = cfg['model_type'],
+                        epochs            = args.epochs,
+                        lr                = args.lr,
+                        hidden_dim        = args.hidden_dim,
+                        dropout           = args.dropout,
+                        weight_decay      = args.weight_decay,
+                        patience          = args.patience,
+                        weighted_tf              = args.weighted_tf,
+                        use_arc_features         = args.use_arc_features,
+                        curriculum               = args.curriculum,
+                        curriculum_phase1_ratio  = args.curriculum_phase1_ratio,
+                        phase_patience                  = [int(p) for p in
+                                                          args.curriculum_patience.split(",")]
+                                                         if args.curriculum_patience else None,
+                        curriculum_sigmoid              = args.curriculum_sigmoid,
+                        curriculum_sigmoid_midpoint     = args.curriculum_sigmoid_midpoint,
+                        curriculum_sigmoid_temp         = args.curriculum_sigmoid_temp,
+                        online_mining                   = args.online_mining,
+                        online_mining_freq              = args.online_mining_freq,
+                        online_mining_k                 = args.online_mining_k,
+                        online_mining_sample            = args.online_mining_sample,
+                        online_mining_warmup            = args.online_mining_warmup)
 
     if args.save_checkpoints:
-        result_no_model = {k: v for k, v in data_step3.items()
-                           if k != 'model'}
-        save_checkpoint(result_no_model,
+        # Salva TUTTO incluso il model (serve per analyze_shap.py)
+        # Il model PyTorch è picklable → può stare nel pkl
+        save_checkpoint(data_step3,
                         os.path.join(exp_dir, "step3.pkl"))
 
     # ── STEP 4 ────────────────────────────────────────────────────
@@ -314,6 +418,10 @@ def run_experiment(analysis_key, exp_name, args, data_step1):
     print(f"  RISULTATI — {exp_name}")
     print("█" * 55)
     print(f"  Modello       : {cfg['model_name']}")
+    print(f"  Topo features : {'✅ attive' if args.use_topo_features else '❌ non usate'}")
+    print(f"  Weighted TF   : {'✅ attivo' if args.weighted_tf else '❌ non usato'}")
+    print(f"  Arc features  : {'✅ attive' if args.use_arc_features else '❌ non usate'}")
+    print(f"  Curriculum    : {'✅ attivo' if args.curriculum else '❌ non usato'}")
     print(f"  AUPR          : {results['aupr']:.4f}")
     print(f"  AUROC         : {results['auroc']:.4f}")
     print(f"  Miglioramento : {results['improvement']:.1f}x vs random")

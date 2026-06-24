@@ -158,7 +158,44 @@ def plot_comparison(df, output_base):
     colors = []
     for _, row in df_sorted.iterrows():
         model = str(row.get('model', ''))
-        if 'HGNN_Edge_Hard_Stratified' in model:
+        # ── Online Mining (Opzione E) ─────────────────────────
+        if 'OnlineMiningW' in model:
+            colors.append('forestgreen')
+        elif 'OnlineMining' in model:
+            colors.append('darkolivegreen')
+        # ── Sigmoid curriculum (Opzione C) ───────────────────
+        elif 'Sigmoid75' in model:
+            colors.append('mediumvioletred')
+        elif 'Sigmoid' in model:
+            colors.append('hotpink')
+        # ── Combinazioni curriculum + altre tecniche ──────────
+        elif 'VarP' in model and 'Curriculum80' in model:
+            colors.append('maroon')
+        elif 'VarP' in model and 'Curriculum70' in model:
+            colors.append('tomato')
+        elif 'VarP' in model and 'Curriculum' in model:
+            colors.append('salmon')
+        elif 'ArcFeat' in model and 'Curriculum70' in model:
+            colors.append('orangered')
+        elif 'ArcFeat' in model and 'Curriculum' in model:
+            colors.append('darkorange')
+        # ── Curriculum learning (più specifico prima) ────────
+        elif 'HGNN_Edge_Hard_Stratified_Curriculum80' in model:
+            colors.append('darkred')
+        elif 'HGNN_Edge_Hard_Stratified_Curriculum70' in model:
+            colors.append('firebrick')
+        elif 'HGNN_Edge_Hard_Stratified_Curriculum60' in model:
+            colors.append('crimson')
+        elif 'HGNN_Edge_Hard_Stratified_Curriculum33' in model or              'HGNN_Edge_Hard_Stratified_Curriculum' in model:
+            colors.append('deeppink')
+        elif 'HGNN_Edge_Stratified_WeightedTF' in model:
+            colors.append('gold')
+        elif 'HGNN_Edge_Stratified_ArcFeat' in model:
+            colors.append('darkcyan')
+        # ── Esperimenti precedenti ────────────────────────
+        elif 'HGNN_Edge_Hard_Stratified_Topo' in model:
+            colors.append('indigo')
+        elif 'HGNN_Edge_Hard_Stratified' in model:
             colors.append('darkviolet')
         elif 'HGNN_Edge_Hard_Random' in model:
             colors.append('orchid')
@@ -166,6 +203,8 @@ def plot_comparison(df, output_base):
             colors.append('darkgreen')
         elif 'GCN_Edge_Hard_Random' in model:
             colors.append('limegreen')
+        elif 'HGNN_Edge_Stratified_Topo' in model:
+            colors.append('royalblue')
         elif 'HGNN_Edge_Stratified' in model:
             colors.append('mediumpurple')
         elif 'HGNN_Edge_Random' in model:
@@ -213,10 +252,23 @@ def plot_comparison(df, output_base):
         Patch(facecolor='darkorange',     label='GCN (gold standard)'),
         Patch(facecolor='lightblue',      label='HGNN (similarità - statistico)'),
         Patch(facecolor='moccasin',       label='GCN (similarità - statistico)'),
+        Patch(facecolor='forestgreen',     label='HGNN (online mining + warmup)'),
+        Patch(facecolor='darkolivegreen',  label='HGNN (online mining senza warmup)'),
+        Patch(facecolor='mediumvioletred', label='HGNN (curriculum sigmoid 75%)'),
+        Patch(facecolor='tomato',         label='HGNN (curriculum 70% + VarPatience)'),
+        Patch(facecolor='orangered',      label='HGNN (curriculum 70% + arc features)'),
+        Patch(facecolor='darkred',        label='HGNN (hard strat - curriculum 80%)'),
+        Patch(facecolor='firebrick',      label='HGNN (hard strat - curriculum 70%)'),
+        Patch(facecolor='crimson',        label='HGNN (hard strat - curriculum 60%)'),
+        Patch(facecolor='deeppink',       label='HGNN (hard strat - curriculum 33%)'),
+        Patch(facecolor='gold',           label='HGNN (edge strat - weighted TF)'),
+        Patch(facecolor='darkcyan',       label='HGNN (edge strat - arc features)'),
+        Patch(facecolor='royalblue',      label='HGNN (edge pred - stratified + topo)'),
         Patch(facecolor='mediumpurple',   label='HGNN (edge pred - stratified)'),
         Patch(facecolor='plum',           label='HGNN (edge pred - random)'),
         Patch(facecolor='mediumseagreen', label='GCN (edge pred - stratified)'),
         Patch(facecolor='palegreen',      label='GCN (edge pred - random)'),
+        Patch(facecolor='indigo',         label='HGNN (edge pred - hard strat + topo)'),
         Patch(facecolor='darkviolet',     label='HGNN (edge pred - hard stratified)'),
         Patch(facecolor='orchid',         label='HGNN (edge pred - hard random)'),
         Patch(facecolor='darkgreen',      label='GCN (edge pred - hard stratified)'),

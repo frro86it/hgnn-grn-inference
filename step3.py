@@ -49,12 +49,15 @@ class HGNNLayer(nn.Module):
 
 
 class HGNN(nn.Module):
-    def __init__(self, in_dim, hidden_dim, out_dim, dropout=0.5):
+    def __init__(self, in_dim, hidden_dim, out_dim, dropout=0.5,
+                 use_arc_features=False):
         super().__init__()
+        self.use_arc_features = use_arc_features
+        arc_dim = 2 if use_arc_features else 0
         self.layer1  = HGNNLayer(in_dim,     hidden_dim, dropout)
         self.layer2  = HGNNLayer(hidden_dim, out_dim,    dropout)
         self.decoder = nn.Sequential(
-            nn.Linear(out_dim * 2, out_dim),
+            nn.Linear(out_dim * 2 + arc_dim, out_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(out_dim, 1)
@@ -63,8 +66,10 @@ class HGNN(nn.Module):
     def forward(self, X, theta):
         return self.layer2(self.layer1(X, theta), theta)
 
-    def predict(self, embeddings, tf_idx, gene_idx):
+    def predict(self, embeddings, tf_idx, gene_idx, arc_features=None):
         pair = torch.cat([embeddings[tf_idx], embeddings[gene_idx]], dim=-1)
+        if self.use_arc_features and arc_features is not None:
+            pair = torch.cat([pair, arc_features], dim=-1)
         return torch.sigmoid(self.decoder(pair))
 
 
@@ -88,12 +93,15 @@ class GCNLayer(nn.Module):
 
 
 class GCN(nn.Module):
-    def __init__(self, in_dim, hidden_dim, out_dim, dropout=0.5):
+    def __init__(self, in_dim, hidden_dim, out_dim, dropout=0.5,
+                 use_arc_features=False):
         super().__init__()
+        self.use_arc_features = use_arc_features
+        arc_dim = 2 if use_arc_features else 0
         self.layer1  = GCNLayer(in_dim,     hidden_dim, dropout)
         self.layer2  = GCNLayer(hidden_dim, out_dim,    dropout)
         self.decoder = nn.Sequential(
-            nn.Linear(out_dim * 2, out_dim),
+            nn.Linear(out_dim * 2 + arc_dim, out_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(out_dim, 1)
@@ -102,8 +110,10 @@ class GCN(nn.Module):
     def forward(self, X, theta):
         return self.layer2(self.layer1(X, theta), theta)
 
-    def predict(self, embeddings, tf_idx, gene_idx):
+    def predict(self, embeddings, tf_idx, gene_idx, arc_features=None):
         pair = torch.cat([embeddings[tf_idx], embeddings[gene_idx]], dim=-1)
+        if self.use_arc_features and arc_features is not None:
+            pair = torch.cat([pair, arc_features], dim=-1)
         return torch.sigmoid(self.decoder(pair))
 
 
@@ -111,13 +121,15 @@ class GCN(nn.Module):
 # MATRICI DI PROPAGAZIONE
 # ══════════════════════════════════════════════════════════════════
 
-def build_theta_hgnn(H):
-    """
-    Calcola Θ = D_v^{-1/2} H W D_e^{-1} H^T D_v^{-1/2}
-    dalla matrice di incidenza H (Feng et al. AAAI 2019).
-    """
+def build_theta_hgnn(H, weighted_tf=False):
     H_t = torch.tensor(H, dtype=torch.float32)
-    W   = torch.ones(H_t.shape[1])
+    if weighted_tf:
+        De = H_t.sum(dim=0)
+        W  = 1.0 / torch.sqrt(De.clamp(min=1.0))
+        W  = W / W.max()
+        print(f"     → W min={W.min():.4f} max={W.max():.4f}")
+    else:
+        W  = torch.ones(H_t.shape[1])
 
     Dv         = H_t.sum(dim=1)
     Dv_invsqrt = torch.where(Dv > 0,
@@ -229,10 +241,67 @@ def prepare_training_data(train_pos, train_neg, gene_list, device,
 # TRAINING LOOP — comune a HGNN e GCN
 # ══════════════════════════════════════════════════════════════════
 
+def build_arc_features(H, tf_idx, gene_idx, device):
+    """Feature a livello di arco: grado normalizzato TF e gene."""
+    H_t        = torch.tensor(H, dtype=torch.float32)
+    tf_degree  = H_t.sum(dim=0)
+    gene_degree = H_t.sum(dim=1)
+    tf_dn      = (tf_degree[tf_idx]    / tf_degree.max().clamp(min=1.0)).unsqueeze(-1).to(device)
+    gene_dn    = (gene_degree[gene_idx] / gene_degree.max().clamp(min=1.0)).unsqueeze(-1).to(device)
+    return torch.cat([tf_dn, gene_dn], dim=-1)
+
+
+def score_negatives(model, X, theta, neg_df, gene_list, device, sample_size=50000):
+    """
+    Calcola la predizione del modello su un campione di negativi.
+    Ritorna gli indici ordinati per predizione decrescente
+    (= i più difficili per il modello in questo momento).
+    """
+    gene_to_idx = {g: i for i, g in enumerate(gene_list)}
+    sample      = neg_df.sample(n=min(sample_size, len(neg_df)), random_state=42)
+    valid       = sample[sample['TF'].isin(gene_to_idx) &
+                         sample['Gene'].isin(gene_to_idx)]
+    if len(valid) == 0:
+        return neg_df.sample(n=min(sample_size, len(neg_df)))
+
+    tf_idx_s   = torch.tensor([gene_to_idx[r] for r in valid['TF']],
+                               dtype=torch.long).to(device)
+    gene_idx_s = torch.tensor([gene_to_idx[r] for r in valid['Gene']],
+                               dtype=torch.long).to(device)
+    model.eval()
+    with torch.no_grad():
+        emb   = model(X, theta)
+        preds = model.predict(emb, tf_idx_s, gene_idx_s).squeeze().cpu().numpy()
+
+    valid = valid.copy()
+    valid['_score'] = preds
+    valid = valid.sort_values('_score', ascending=False)
+    return valid.drop(columns=['_score'])
+
+
 def train_model(model, X, theta, tf_idx, gene_idx, labels,
                 epochs=100, lr=0.001, weight_decay=5e-4,
-                patience=10):
-    """Allena il modello con early stopping."""
+                patience=10, curriculum_data=None,
+                arc_features=None, phase_patience=None,
+                curriculum_sigmoid=False,
+                online_mining_data=None):
+    """
+    Allena il modello con early stopping.
+
+    Tutti i parametri nuovi hanno default backward-compatible:
+      curriculum_data:    None  → comportamento originale
+      arc_features:       None  → decoder standard
+      phase_patience:     None  → patience globale per tutte le fasi
+      curriculum_sigmoid: False → fasi discrete (comportamento originale)
+      online_mining_data: None  → nessun mining (comportamento originale)
+                          dict  → ogni 'freq' epoche ricalcola i negativi hard
+                                  usando le predizioni del modello corrente.
+                                  'warmup' epoche iniziali su random puro
+                                  prima del primo aggiornamento.
+    """
+    import pandas as pd
+    import numpy as np
+
     optimizer  = torch.optim.Adam(model.parameters(),
                                   lr=lr, weight_decay=weight_decay)
     loss_fn    = nn.BCELoss()
@@ -242,18 +311,152 @@ def train_model(model, X, theta, tf_idx, gene_idx, labels,
     best_state = None
     best_epoch = 0
 
+    # ── Decide il percorso di training ───────────────────────────
+    # I 4 percorsi sono MUTUAMENTE ESCLUSIVI e tutti backward-compat
+    use_online   = online_mining_data is not None       # NUOVO
+    use_sigmoid  = (not use_online) and curriculum_sigmoid                    and curriculum_data is not None
+    use_discrete = (not use_online) and (not use_sigmoid)                    and curriculum_data is not None
+    # use_online=False, use_sigmoid=False, use_discrete=False
+    # → percorso originale (tf_idx/gene_idx/labels fissi)
+
+    # ── Setup fasi discrete ───────────────────────────────────────
+    phase1_end = phase2_end = 0
+    if use_discrete:
+        r1         = curriculum_data.get('phase1_ratio', 0.33)
+        r2         = r1 + (1.0 - r1) / 2
+        phase1_end = int(epochs * r1)
+        phase2_end = int(epochs * r2)
+        print(f"\n  Curriculum FASI DISCRETE: F1 ep1-{phase1_end} | "
+              f"F2 ep{phase1_end+1}-{phase2_end} | F3 ep{phase2_end+1}-{epochs}")
+
+    # ── Setup sigmoid ─────────────────────────────────────────────
+    sig_mid = sig_temp = 0
+    if use_sigmoid:
+        sig_mid  = curriculum_data.get('sigmoid_midpoint', 0.75) * epochs
+        sig_temp = curriculum_data.get('sigmoid_temp', 10.0)
+        print(f"\n  Curriculum SIGMOID: midpoint ep={sig_mid:.0f} temp={sig_temp}")
+
+    # ── Setup online mining ───────────────────────────────────────
+    if use_online:
+        om        = online_mining_data
+        om_freq   = om.get('freq',    10)
+        om_k      = om.get('k',       len(om['train_pos']))
+        om_samp   = om.get('sample',  50000)
+        om_warmup = om.get('warmup',  0)
+        print(f"\n  Online Hard Negative Mining ATTIVO:")
+        print(f"     Warmup: ep 1-{om_warmup} su random puro "
+              f"{'(nessun warmup)' if om_warmup == 0 else ''}")
+        print(f"     Mining: ogni {om_freq} epoche da ep {om_warmup+1}")
+        print(f"     Top-{om_k} negativi su campione di {om_samp}")
+        print(f"     Ciclo: predict → rank → seleziona top-K → training")
+
+    # ── Patience per fase ─────────────────────────────────────────
+    p_fase = list(phase_patience)              if phase_patience is not None and len(phase_patience) == 3              else [patience, patience, patience]
+    cur_patience = p_fase[0]
+
     print(f"\n  Inizio training ({epochs} epoche, patience={patience})...")
-    print(f"  {'Epoca':>6} | {'Loss':>10} | {'AUPR':>8}")
-    print(f"  {'─'*6}-+-{'─'*10}-+-{'─'*8}")
+    print(f"  {'Epoca':>6} | {'Loss':>10} | {'AUPR':>8} | Fase")
+    print(f"  {'─'*6}-+-{'─'*10}-+-{'─'*8}-+-────")
+
+    cur_tf_idx   = tf_idx
+    cur_gene_idx = gene_idx
+    cur_labels   = labels
+    cur_arc      = arc_features
+    cur_phase    = "random"
 
     for epoch in range(1, epochs + 1):
+
+        # ══ PERCORSO A: ONLINE MINING ═════════════════════════════
+        if use_online:
+            om = online_mining_data
+
+            if epoch <= om_warmup:
+                # ── Fase warmup: random puro, nessun mining ───────
+                if epoch == 1:
+                    cur_tf_idx, cur_gene_idx, cur_labels = prepare_training_data(
+                        om['train_pos'], om['train_neg'],
+                        om['gene_list'], om['device'], hard_neg=None)
+                    cur_phase = "warmup"
+                    print(f"  [ep   1] Warmup su random puro "
+                          f"({om_warmup} epoche)")
+
+            elif epoch == om_warmup + 1 or                  (epoch > om_warmup and (epoch - om_warmup) % om_freq == 0):
+                # ── Fase mining: aggiorna negativi ogni freq epoche ─
+                # Il modello ha già om_warmup epoche di training
+                # → embeddings significativi → mining affidabile
+                hard_now = score_negatives(
+                    model, X, theta,
+                    om['train_neg'], om['gene_list'],
+                    om['device'], sample_size=om_samp
+                ).head(om_k)
+
+                cur_tf_idx, cur_gene_idx, cur_labels = prepare_training_data(
+                    om['train_pos'], om['train_neg'],
+                    om['gene_list'], om['device'],
+                    hard_neg=hard_now)
+                n_update = (epoch - om_warmup) // om_freq
+                cur_phase = f"mine#{n_update}"
+                print(f"  [ep {epoch:>3}] Mining #{n_update}: "
+                      f"{om_k} hard neg aggiornati")
+
+        # ══ PERCORSO B: SIGMOID ════════════════════════════════════
+        elif use_sigmoid:
+            p_hard  = 1.0 / (1.0 + np.exp(-(epoch - sig_mid) / sig_temp))
+            n       = len(curriculum_data['train_pos'])
+            n_hard  = min(int(n * p_hard),
+                          len(curriculum_data['hard_neg']))
+            n_rand  = n - n_hard
+            hard_s  = curriculum_data['hard_neg'].sample(
+                          n=n_hard, random_state=epoch) if n_hard > 0                       else pd.DataFrame()
+            rand_s  = curriculum_data['train_neg'].sample(
+                          n=n_rand, random_state=epoch)
+            mixed   = pd.concat([hard_s, rand_s]) if n_hard > 0 else rand_s
+            cur_tf_idx, cur_gene_idx, cur_labels = prepare_training_data(
+                curriculum_data['train_pos'], mixed,
+                curriculum_data['gene_list'],
+                curriculum_data['device'], hard_neg=None)
+            cur_phase = f"s{int(p_hard*100)}%"
+
+        # ══ PERCORSO C: FASI DISCRETE ══════════════════════════════
+        elif use_discrete:
+            cd = curriculum_data
+            if epoch == 1:
+                cur_tf_idx, cur_gene_idx, cur_labels = prepare_training_data(
+                    cd['train_pos'], cd['train_neg'],
+                    cd['gene_list'], cd['device'], hard_neg=None)
+                cur_phase    = "random"
+                cur_patience = p_fase[0]
+                no_improve   = 0
+            elif epoch == phase1_end + 1:
+                if cd.get('hard_neg') is not None:
+                    n           = len(cd['train_pos'])
+                    half_hard   = cd['hard_neg'].sample(n=n//2, random_state=epoch)
+                    half_random = cd['train_neg'].sample(n=n//2, random_state=epoch)
+                    mixed_neg   = pd.concat([half_hard, half_random])
+                    cur_tf_idx, cur_gene_idx, cur_labels = prepare_training_data(
+                        cd['train_pos'], mixed_neg,
+                        cd['gene_list'], cd['device'], hard_neg=None)
+                cur_phase    = "mixed"
+                cur_patience = p_fase[1]
+                no_improve   = 0
+            elif epoch == phase2_end + 1:
+                if cd.get('hard_neg') is not None:
+                    cur_tf_idx, cur_gene_idx, cur_labels = prepare_training_data(
+                        cd['train_pos'], cd['train_neg'],
+                        cd['gene_list'], cd['device'],
+                        hard_neg=cd['hard_neg'])
+                cur_phase    = "hard"
+                cur_patience = p_fase[2]
+                no_improve   = 0
+
+        # ══ Training step (uguale per tutti i percorsi) ════════════
         model.train()
         optimizer.zero_grad()
-
         embeddings = model(X, theta)
-        preds      = model.predict(embeddings, tf_idx, gene_idx).squeeze()
-        loss       = loss_fn(preds, labels)
-
+        preds      = model.predict(
+            embeddings, cur_tf_idx, cur_gene_idx,
+            arc_features=cur_arc).squeeze()
+        loss = loss_fn(preds, cur_labels)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -265,10 +468,13 @@ def train_model(model, X, theta, tf_idx, gene_idx, labels,
             model.eval()
             with torch.no_grad():
                 emb_e  = model(X, theta)
-                pred_e = model.predict(emb_e, tf_idx, gene_idx) \
-                               .squeeze().cpu().numpy()
-            aupr = average_precision_score(labels.cpu().numpy(), pred_e)
-            print(f"  {epoch:>6} | {current_loss:>10.4f} | {aupr:>8.4f}")
+                pred_e = model.predict(
+                    emb_e, cur_tf_idx, cur_gene_idx,
+                    arc_features=cur_arc).squeeze().cpu().numpy()
+            aupr = average_precision_score(cur_labels.cpu().numpy(), pred_e)
+            phase_str = cur_phase if use_online else cur_phase[:8]
+            print(f"  {epoch:>6} | {current_loss:>10.4f} | "
+                  f"{aupr:>8.4f} | {phase_str:<8}")
 
         history.append({'epoch': epoch, 'loss': current_loss, 'aupr': aupr})
 
@@ -279,8 +485,9 @@ def train_model(model, X, theta, tf_idx, gene_idx, labels,
             best_state = {k: v.clone() for k, v in model.state_dict().items()}
         else:
             no_improve += 1
-            if no_improve >= patience:
-                print(f"\n  ⏹  Early stopping a epoca {epoch}")
+            if no_improve >= cur_patience:
+                print(f"\n  ⏹  Early stopping a epoca {epoch} "
+                      f"(patience={cur_patience})")
                 break
 
     if best_state:
@@ -295,9 +502,21 @@ def train_model(model, X, theta, tf_idx, gene_idx, labels,
 # ══════════════════════════════════════════════════════════════════
 
 def run(data, model_type='hgnn', epochs=100, lr=0.001,
-        hidden_dim=128, dropout=0.5, weight_decay=5e-4, patience=10):
+        hidden_dim=128, dropout=0.5, weight_decay=5e-4, patience=10,
+        weighted_tf=False, use_arc_features=False,
+        curriculum=False, curriculum_phase1_ratio=0.33,
+        phase_patience=None,
+        curriculum_sigmoid=False,
+        curriculum_sigmoid_midpoint=0.75,
+        curriculum_sigmoid_temp=10.0,
+        online_mining=False,
+        online_mining_freq=10,
+        online_mining_k=0,
+        online_mining_sample=50000,
+        online_mining_warmup=0):
     """
     Esegue il training del modello scelto.
+    Tutti i nuovi flag hanno default backward-compatible (False/0/None).
 
     Parametri:
         model_type : 'hgnn' o 'gcn'
@@ -328,7 +547,7 @@ def run(data, model_type='hgnn', epochs=100, lr=0.001,
     if model_type == 'hgnn':
         print("\n  Calcolo Θ (ipergrafo)...")
         H     = data['H']
-        theta = build_theta_hgnn(H).to(device)
+        theta = build_theta_hgnn(H, weighted_tf=weighted_tf).to(device)
     else:  # gcn
         if 'A' in data:
             print("\n  Uso A pre-calcolata (approccio statistico)...")
@@ -361,14 +580,59 @@ def run(data, model_type='hgnn', epochs=100, lr=0.001,
 
     ModelClass = HGNN if model_type == 'hgnn' else GCN
     model      = ModelClass(in_dim=in_dim, hidden_dim=hidden_dim,
-                             out_dim=hidden_dim,
-                             dropout=dropout).to(device)
+                             out_dim=hidden_dim, dropout=dropout,
+                             use_arc_features=use_arc_features).to(device)
+
+    # ── Arc features ─────────────────────────────────────────────
+    arc_feats = None
+    if use_arc_features and model_type == 'hgnn' and 'H' in data:
+        arc_feats = build_arc_features(data['H'], tf_idx, gene_idx, device)
+
+    # ── Curriculum data (fasi discrete e sigmoid) ─────────────────
+    curriculum_data = None
+    use_any_curr = curriculum or curriculum_sigmoid
+    if use_any_curr and data.get('hard_neg') is not None:
+        curriculum_data = {
+            'train_pos':        train_pos,
+            'train_neg':        train_neg,
+            'hard_neg':         data['hard_neg'],
+            'gene_list':        gene_list,
+            'device':           device,
+            'phase1_ratio':     curriculum_phase1_ratio,
+            'sigmoid_midpoint': curriculum_sigmoid_midpoint,
+            'sigmoid_temp':     curriculum_sigmoid_temp,
+        }
+    elif use_any_curr:
+        print("  ⚠️  Curriculum richiede hard_neg")
+
+    # ── Online Mining data (percorso separato) ────────────────────
+    online_mining_data = None
+    if online_mining and 'train_neg' in data:
+        n_pos  = len(train_pos)
+        om_k   = online_mining_k if online_mining_k > 0 else n_pos
+        online_mining_data = {
+            'train_pos':  train_pos,
+            'train_neg':  train_neg,
+            'gene_list':  gene_list,
+            'device':     device,
+            'freq':       online_mining_freq,
+            'k':          om_k,
+            'sample':     online_mining_sample,
+            'warmup':     online_mining_warmup,
+        }
+    elif online_mining:
+        print("  ⚠️  Online Mining richiede train_neg nei dati")
 
     # ── Training ──────────────────────────────────────────────────
     model, history, best_epoch = train_model(
         model, X, theta, tf_idx, gene_idx, labels,
         epochs=epochs, lr=lr,
-        weight_decay=weight_decay, patience=patience
+        weight_decay=weight_decay, patience=patience,
+        curriculum_data=curriculum_data,
+        arc_features=arc_feats,
+        phase_patience=phase_patience,
+        curriculum_sigmoid=curriculum_sigmoid,
+        online_mining_data=online_mining_data
     )
 
     # ── Embedding finali ──────────────────────────────────────────

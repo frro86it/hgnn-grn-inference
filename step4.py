@@ -43,7 +43,7 @@ GOLD_STANDARD_RATIO = 68
 # ══════════════════════════════════════════════════════════════════
 
 def predict_test_set(model, embeddings, test_pos, test_neg,
-                     gene_list, device):
+                     gene_list, device, H=None):
     """
     Calcola le probabilità per tutte le coppie del test set.
 
@@ -95,7 +95,13 @@ def predict_test_set(model, embeddings, test_pos, test_neg,
 
     model.eval()
     with torch.no_grad():
-        preds = model.predict(emb_tensor, tf_idx, gene_idx)
+        # Se il modello usa arc_features, le calcoliamo e le passiamo
+        arc_features = None
+        if hasattr(model, 'use_arc_features') and model.use_arc_features and H is not None:
+            from step3 import build_arc_features
+            arc_features = build_arc_features(H, tf_idx, gene_idx, device)
+        preds = model.predict(emb_tensor, tf_idx, gene_idx,
+                              arc_features=arc_features)
         preds = preds.squeeze().cpu().numpy()
 
     return np.array(test_labels), preds
@@ -241,8 +247,9 @@ def run(data, output_dir=None):
 
     # Predici
     print("\n  Calcolo predizioni sul test set...")
+    H = data.get('H', None)
     y_true, y_pred = predict_test_set(
-        model, embeddings, test_pos, test_neg, gene_list, device
+        model, embeddings, test_pos, test_neg, gene_list, device, H=H
     )
 
     # Metriche

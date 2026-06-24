@@ -46,6 +46,57 @@ def normalize_expression(expression_df):
 
 
 # ══════════════════════════════════════════════════════════════════
+# FEATURE TOPOLOGICHE (opzionale)
+# ══════════════════════════════════════════════════════════════════
+
+def add_topo_features(X_norm, H):
+    """
+    Aggiunge feature topologiche alle feature di espressione.
+
+    Per ogni gene aggiunge 2 colonne a X_norm:
+        colonna -2: grado normalizzato d(v) / max_degree
+                    "quanti TF regolano questo gene?"
+        colonna -1: entropia normalizzata H(v) / max_entropy
+                    "quanto è distribuita la regolazione?"
+
+    X_old: (n_geni × 805)
+    X_new: (n_geni × 807)
+
+    Perché normalizzate?
+        Grado max = 12, entropia max = 3.585 bit
+        Se non normalizziamo queste feature
+        dominano i 805 valori di espressione
+        che sono già in scala Z-score (media=0, std=1)
+
+    Attivata solo con --use_topo_features
+    → di default non viene chiamata
+    → tutti i vecchi esperimenti rimangono invariati
+    """
+    # Grado per ogni gene
+    degree  = H.sum(axis=1).astype(np.float32)  # (n_geni,)
+
+    # Entropia per ogni gene
+    deg_safe  = np.where(degree > 0, degree, 1.0)
+    P         = H / deg_safe[:, None]
+    P_safe    = np.where(P > 0, P, 1.0)
+    entropy   = -np.sum(P * np.log2(P_safe) * (P > 0), axis=1)
+    entropy   = entropy.astype(np.float32)
+    entropy[degree == 0] = 0.0
+
+    # Normalizza tra 0 e 1
+    max_deg  = degree.max()  if degree.max()  > 0 else 1.0
+    max_ent  = entropy.max() if entropy.max() > 0 else 1.0
+    deg_norm = (degree  / max_deg)[:, None]   # (n_geni × 1)
+    ent_norm = (entropy / max_ent)[:, None]   # (n_geni × 1)
+
+    X_new = np.concatenate([X_norm, deg_norm, ent_norm], axis=1)
+
+    print(f"     → Feature aggiunte: grado e entropia normalizzati")
+    print(f"     → X shape: {X_norm.shape} → {X_new.shape}")
+    return X_new
+
+
+# ══════════════════════════════════════════════════════════════════
 # OPZIONE B — separazione negativi
 # ══════════════════════════════════════════════════════════════════
 
@@ -390,19 +441,22 @@ def build_from_edge_prediction(gold_df, gene_list, tf_list,
 # ══════════════════════════════════════════════════════════════════
 
 def run(data, structure='gold_standard', model_type='hgnn',
-        masking='random', k=10, test_ratio=0.2, seed=42):
+        masking='random', k=10, test_ratio=0.2, seed=42,
+        use_topo_features=False):
     """
     Esegue lo Step 2 unificato.
 
     Parametri:
-        structure  : 'gold_standard' | 'statistical' | 'edge_prediction'
-        model_type : 'hgnn' | 'gcn'
-        masking    : 'random' | 'stratified' |
-                     'hard_random' | 'hard_stratified'
-                     (solo per edge_prediction)
-        k          : K nearest neighbors (solo per statistical)
-        test_ratio : frazione di test (default 0.2)
-        seed       : riproducibilità
+        structure         : 'gold_standard' | 'statistical' | 'edge_prediction'
+        model_type        : 'hgnn' | 'gcn'
+        masking           : 'random' | 'stratified' |
+                            'hard_random' | 'hard_stratified'
+                            (solo per edge_prediction)
+        k                 : K nearest neighbors (solo per statistical)
+        test_ratio        : frazione di test (default 0.2)
+        seed              : riproducibilità
+        use_topo_features : se True aggiunge grado ed entropia a X
+                            (default False → comportamento identico a prima)
     """
     print("\n" + "═" * 55)
     print(f"  STEP 2 — {structure.upper()} | {model_type.upper()}")
@@ -410,6 +464,8 @@ def run(data, structure='gold_standard', model_type='hgnn',
         print(f"  Masking: {masking}")
     if structure == 'statistical':
         print(f"  K nearest neighbors: {k}")
+    if use_topo_features:
+        print(f"  Feature topologiche: ATTIVE (X: 805 → 807)")
     print("═" * 55)
 
     expression_df = data['expression_df']
@@ -446,6 +502,13 @@ def run(data, structure='gold_standard', model_type='hgnn',
     else:
         raise ValueError(f"Structure '{structure}' non valida.")
 
+    # Aggiunge feature topologiche se richiesto
+    if use_topo_features:
+        print("\n  Aggiungo feature topologiche a X...")
+        # Usa la struttura già costruita per calcolare grado ed entropia
+        H_for_topo = struct if struct_key == 'H' else data.get('H', struct)
+        X_norm = add_topo_features(X_norm, H_for_topo)
+
     # Riepilogo
     print("\n" + "─" * 50)
     print("  RIEPILOGO STEP 2")
@@ -454,6 +517,8 @@ def run(data, structure='gold_standard', model_type='hgnn',
     print(f"  Model type   : {model_type}")
     if structure == 'edge_prediction':
         print(f"  Masking      : {masking}")
+    if use_topo_features:
+        print(f"  Topo features: grado + entropia aggiunti a X")
     print(f"  {struct_key} shape     : {struct.shape}")
     print(f"  X_norm       : {X_norm.shape}")
     print(f"  Train pos    : {len(train_pos)}")

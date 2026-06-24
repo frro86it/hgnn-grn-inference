@@ -1,0 +1,23 @@
+{
+  "exp_name": "edge_hgnn_stratified_topo",
+  "analysis": "hgnn_edge_stratified",
+  "model": "HGNN_Edge_Stratified_Topo",
+  "structure": "edge_prediction",
+  "model_type": "hgnn",
+  "masking": "stratified",
+  "k": 10,
+  "epochs": 100,
+  "lr": 0.001,
+  "hidden_dim": 128,
+  "dropout": 0.5,
+  "weight_decay": 0.0005,
+  "patience": 10,
+  "test_ratio": 0.2,
+  "seed": 42,
+  "neg_split": "opzione_B",
+  "use_topo_features": true,
+  "input_features": 807,
+  "weighted_tf": false,
+  "use_arc_features": false,
+  "curriculum": false
+}

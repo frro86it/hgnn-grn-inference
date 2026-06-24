@@ -1,33 +1,50 @@
-# ─────────────────────────────────────────────────────────────
-# GRN Hypergraph Classifier — Requirements
-# Progetto: GRN inference con Hypergraph Neural Networks
-# Dataset:  DREAM5 Network 1
-#
-# Come installare:
-#   1. Crea il venv:   python3 -m venv grn_hgnn_env
-#   2. Attivalo:       source grn_hgnn_env/bin/activate   (Mac/Linux)
-#                      grn_hgnn_env\Scripts\activate       (Windows)
-#   3. Installa:       pip install -r requirements.txt
-# ─────────────────────────────────────────────────────────────
-
-# ── Dati e calcolo numerico ──────────────────────────────────
-pandas>=2.0.0          # lettura file TSV/CSV (expression data, gold standard)
-numpy>=1.24.0          # operazioni su matrici (matrice di incidenza H)
-scipy>=1.10.0          # calcoli scientifici aggiuntivi
-
-# ── Machine Learning classico ────────────────────────────────
-scikit-learn>=1.2.0    # metriche (AUPR), train/test split, normalizzazione
-
-# ── Visualizzazione ──────────────────────────────────────────
-matplotlib>=3.7.0      # grafici delle performance (loss, AUPR)
-
-# ── Deep Learning ────────────────────────────────────────────
-torch>=2.0.0           # framework principale per la rete neurale HGNN
-torch_geometric>=2.3.0 # utilities per grafi e reti neurali su grafi
-
-# ─────────────────────────────────────────────────────────────
-# NOTA: NON installiamo DHG perché richiede torch<2.0
-#       che è incompatibile con torch_geometric>=2.3.0
-#       Implementeremo la HGNN direttamente in PyTorch puro
-#       basandoci sul paper: Feng et al. AAAI 2019
-# ─────────────────────────────────────────────────────────────
+aiohappyeyeballs==2.6.1
+aiohttp==3.13.5
+aiosignal==1.4.0
+async-timeout==5.0.1
+attrs==26.1.0
+certifi==2026.2.25
+charset-normalizer==3.4.7
+cloudpickle==3.1.2
+contourpy==1.3.2
+cycler==0.12.1
+filelock==3.25.2
+fonttools==4.62.1
+frozenlist==1.8.0
+fsspec==2026.3.0
+idna==3.11
+Jinja2==3.1.6
+joblib==1.5.3
+kiwisolver==1.5.0
+llvmlite==0.47.0
+MarkupSafe==3.0.3
+matplotlib==3.10.8
+mpmath==1.3.0
+multidict==6.7.1
+networkx==3.4.2
+numba==0.65.1
+numpy==2.2.6
+packaging==26.0
+pandas==2.3.3
+pillow==12.2.0
+propcache==0.4.1
+psutil==7.2.2
+pyparsing==3.3.2
+python-dateutil==2.9.0.post0
+pytz==2026.1.post1
+requests==2.33.1
+scikit-learn==1.7.2
+scipy==1.15.3
+shap==0.49.1
+six==1.17.0
+slicer==0.0.8
+sympy==1.14.0
+threadpoolctl==3.6.0
+torch==2.11.0
+torch-geometric==2.7.0
+tqdm==4.67.3
+typing_extensions==4.15.0
+tzdata==2026.1
+urllib3==2.6.3
+xxhash==3.6.0
+yarl==1.23.0
